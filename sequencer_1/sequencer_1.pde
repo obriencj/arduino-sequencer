@@ -4,7 +4,7 @@
 #define SPEAKER 3
 
 // the digital pin that the LED is flashed on
-#define INDICATOR 8
+#define INDICATOR 10
 
 // the analog pin that the note knob is on
 #define NOTE_KNOB 0
@@ -17,6 +17,10 @@
 
 // the digital in pin that the Poke button is on
 #define POKE_BUTTON 0
+
+// the digital in pins connect to the three-position switch
+#define STEP_LEFT 7
+#define STEP_RIGHT 6
 
 // The tempo range, as length of note in ms
 #define TEMPO_SLOW 1000
@@ -73,20 +77,23 @@ static int pattern_scale[PATTERN_LEN]; // the scale int itself
 
 void setup() {
 
+  int foo[] = {0, 3, 0, 1, 0, 6, 0, 1};
+
   // write our initial pattern
-  for(int i = PATTERN_LEN; i--; ) {
-    pattern_scale[i] = 64;
-    switch(i % 4) {
-      case 0: pattern[i] = 0; break;
-      case 1: pattern[i] = 5; break;
-      case 2: pattern[i] = 0; break;
-      case 3: pattern[i] = 1; break;
-    }
+  for(int index = PATTERN_LEN; index--; ) {
+    pattern_scale[index] = 64;
+    pattern[index] = foo[index % 8];
   }
   
   // set some pin modes.
   pinMode(POKE_BUTTON, INPUT);
   pinMode(INDICATOR, OUTPUT);
+  
+  // create a pair of pull-up inputs for our three-way toggle.
+  pinMode(STEP_LEFT, INPUT);
+  pinMode(STEP_RIGHT, INPUT);
+  digitalWrite(STEP_LEFT, HIGH);
+  digitalWrite(STEP_RIGHT, HIGH);
     
   #if SERIAL_DEBUG
   Serial.begin(SERIAL_BAUD);
@@ -94,28 +101,34 @@ void setup() {
 } 
 
 
+#define readStep() \
+  ((digitalRead(STEP_LEFT) == LOW)? -1: ((digitalRead(STEP_RIGHT) == LOW)? 1: 0))
+
+
 void loop(){ 
-  float note;
-  unsigned int i, poke, tempo, scale;
+  unsigned int poke, tempo, scale;
+  unsigned int index = 0, indi = 0;
   
-  for(i = PATTERN_LEN; i--; ) {
-    
+  while(true) {
     // blink the indicator for alternating notes.
-    digitalWrite(INDICATOR, i & 1? HIGH: LOW);
+    digitalWrite(INDICATOR, indi? HIGH: LOW);
+    indi = !indi;
     
     // get the tempo every cycle
     tempo = map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
 
     if(! digitalRead(POKE_BUTTON)) {
+      // the poke button is pressed, so we'll read the note and scale knobs
       poke = map(analogRead(NOTE_KNOB), 0, 1023, 15, 0);
-      pattern[i] = poke;
-
       scale = map(analogRead(SCALE_KNOB), 0, 1023, 10, 500);
-      pattern_scale[i] = scale;
+
+      // save the note and scale into the pattern
+      pattern_scale[index] = scale;
+      pattern[index] = poke;
       
       #if SERIAL_DEBUG 
       Serial.print("mod ");
-      Serial.print(i, DEC);
+      Serial.print(index, DEC);
       Serial.print(" to ");
       Serial.print(scale, DEC);
       Serial.print(":");
@@ -123,22 +136,24 @@ void loop(){
       #endif
       
     } else {
-      poke = pattern[i];
-      scale = pattern_scale[i];
+      // load the note and scale from the existing pattern
+      poke = pattern[index];
+      scale = pattern_scale[index];
     }
     
     #if SERIAL_DEBUG
     Serial.print("play ");
-    Serial.print(i, DEC);
+    Serial.print(index, DEC);
     Serial.print(" as ");
     Serial.println(poke);
     #endif
+
+    // play the note in its scale for the duration of the tempo
+    freqout((int)(majScale[poke] / scale), tempo);
     
-    note = majScale[poke] / scale;
-    freqout((int) note, tempo);
-    
-    // the stopped tempo is magical, it never progresses
-    if(tempo == TEMPO_SLOW) i++;
+    // move the index forward or backwards depending on the step pins
+    index += readStep();
+    index %= PATTERN_LEN;
   }
 }
 
