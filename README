@@ -1,0 +1,4 @@
+This is my first shot at sequencer software for the Arduino.
+
+You end up with three controlling knobs, a speaker (with optional
+volume knob), a button, and an LED.
