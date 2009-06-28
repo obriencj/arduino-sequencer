@@ -4,16 +4,16 @@
 #define SPEAKER 3
 
 // the digital pin that the LED is flashed on
-#define INDICATOR 10
+//#define INDICATOR 8
 
 // the analog pin that the note knob is on
-#define NOTE_KNOB 0
+#define NOTE_KNOB 2
 
 // the analog pin that the scale knob is on
-#define SCALE_KNOB 3
+#define SCALE_KNOB 1
 
 // the analog pin that the tempo knob is on
-#define TEMPO_KNOB 5
+#define TEMPO_KNOB 0
 
 // the digital in pin that the Poke button is on
 #define POKE_BUTTON 0
@@ -22,9 +22,13 @@
 #define STEP_LEFT 7
 #define STEP_RIGHT 6
 
+// the scale divider ranges
+#define SCALE_LOW 500
+#define SCALE_HIGH 10
+
 // The tempo range, as length of note in ms
-#define TEMPO_SLOW 1000
-#define TEMPO_FAST 20
+#define TEMPO_SLOW 500
+#define TEMPO_FAST 50
 
 // how many notes we loop over
 #define PATTERN_LEN  64
@@ -67,7 +71,8 @@ static const float
 
 // the notes available via the NOTE_KNOB
 static const float majScale[] = {
-  Rest, A,  B,  CS,  D,  E,  FS,  GS,  A2,   B2,  C2S,  D2,  E2,  F2S,  G2S,  A3};
+  Rest, A,  B,  CS,  D,  E,  FS,  GS,
+  A2,   B2,  C2S,  D2,  E2,  F2S,  G2S,  A3};
 
 
 // our pattern
@@ -87,8 +92,11 @@ void setup() {
   
   // set some pin modes.
   pinMode(POKE_BUTTON, INPUT);
+
+  #if INDICATOR
   pinMode(INDICATOR, OUTPUT);
-  
+  #endif
+
   // create a pair of pull-up inputs for our three-way toggle.
   pinMode(STEP_LEFT, INPUT);
   pinMode(STEP_RIGHT, INPUT);
@@ -102,7 +110,8 @@ void setup() {
 
 
 #define readStep() \
-  ((digitalRead(STEP_LEFT) == LOW)? -1: ((digitalRead(STEP_RIGHT) == LOW)? 1: 0))
+  ((digitalRead(STEP_LEFT) == LOW)? -1: \
+   ((digitalRead(STEP_RIGHT) == LOW)? 1: 0))
 
 
 void loop(){ 
@@ -110,17 +119,21 @@ void loop(){
   unsigned int index = 0, indi = 0;
   
   while(true) {
+
+    #if INDICATOR
     // blink the indicator for alternating notes.
     digitalWrite(INDICATOR, indi? HIGH: LOW);
     indi = !indi;
+    #endif
     
     // get the tempo every cycle
     tempo = map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
 
     if(! digitalRead(POKE_BUTTON)) {
       // the poke button is pressed, so we'll read the note and scale knobs
-      poke = map(analogRead(NOTE_KNOB), 0, 1023, 15, 0);
-      scale = map(analogRead(SCALE_KNOB), 0, 1023, 10, 500);
+      poke = map(analogRead(NOTE_KNOB), 0, 1023, 0, 15);
+      scale = map(analogRead(SCALE_KNOB), 0, 1023, SCALE_LOW, SCALE_HIGH);
+      scale &= 0xfffe;
 
       // save the note and scale into the pattern
       pattern_scale[index] = scale;
