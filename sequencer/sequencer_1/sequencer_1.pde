@@ -16,7 +16,7 @@
 #define TEMPO_KNOB 0
 
 // the digital in pin that the Poke button is on
-#define POKE_BUTTON 0
+#define POKE_BUTTON 11
 
 // the digital in pins connect to the three-position switch
 #define STEP_LEFT 9
@@ -34,7 +34,7 @@
 #define PATTERN_LEN  64
 
 // debug some data out over serial if 1
-#define SERIAL_DEBUG 1
+#define SERIAL_DEBUG 0
 #define SERIAL_BAUD  115200
 
 

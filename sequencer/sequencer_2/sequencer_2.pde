@@ -59,15 +59,14 @@ author: Christopher O'Brien  <obriencj@gmail.com>
 #define TEMPO_KNOB 0
 
 // the scale divider ranges
-#define SCALE_LOW 256
-#define SCALE_HIGH 16
-
-// The tempo range, as a counter triggered at SAMPLE_RATE
-#define TEMPO_SLOW 4000
-#define TEMPO_FAST 400
-
+#define SCALE_LOW  (1 << 8)
+#define SCALE_HIGH (1 << 4)
 
 #define SAMPLE_RATE 8000
+
+// The tempo range, as a counter triggered at SAMPLE_RATE
+#define TEMPO_SLOW (SAMPLE_RATE / 2)
+#define TEMPO_FAST (SAMPLE_RATE / 50)
 
 static const float timer_freq = F_CPU / SAMPLE_RATE;
 
@@ -195,22 +194,21 @@ ISR(TIMER1_COMPA_vect) {
 /* turn the frequency of the tone (note / scale) into a number of
    ticks for our interrupt to count before flipping. */
 #define note_to_ticks(notei, scale) \
-  (notei? (timer_freq / (note_set[notei] / (scale & 0xfffe))): 0)
+  (notei? ((SAMPLE_RATE / 2) / (note_set[notei] / scale)): 0)
 
 
 
 void setup() {
   
   // our initial patterns, which is just some beep boop looping.
-  const int foo_a[] = {3, 0, 0, 4, 0, 0, 0, 0};
-  const int foo_b[] = {0, 5, 0, 1, 0, 5, 0, 1};
+  const int foo_a[] = {3, 0, 1, 0, 6, 0, 1, 0};
+  const int foo_b[] = {1, 0, 0, 0, 1, 0, 0, 1};
   
-  // disable interrupts while we're getting outselves set up
   cli();
 
   for(int index = 64; index--; ) {
-    pattern[index][0] = mapTicks(foo_a[index % 8], 64);
-    pattern[index][1] = mapTicks(foo_b[index % 8], 64);
+    pattern[index][0] = note_to_ticks(foo_a[index % 8], 64);
+    pattern[index][1] = note_to_ticks(foo_b[index % 8], 64);
   }
 
   // this madness sets up our Timer 1 interrupt frequency.
@@ -219,7 +217,7 @@ void setup() {
   TCCR1B = (TCCR1B & ~_BV(WGM13)) | _BV(WGM12);
   TCCR1A = TCCR1A & ~(_BV(WGM11) | _BV(WGM10));
   TCCR1B = (TCCR1B & ~(_BV(CS12) | _BV(CS11))) | _BV(CS10);
-  OCR1A = timer_freq;
+  OCR1A = F_CPU / SAMPLE_RATE;
   TIMSK1 |= _BV(OCIE1A);
   
   // set all of PORTD as output
@@ -254,6 +252,7 @@ void loop() {
     
     // the scale divider
     scale = map(analogRead(SCALE_KNOB), 0, 1023, SCALE_LOW, SCALE_HIGH);
+    scale &= 0xfffe;
     
     // an index into the note_set array
     notei = map(analogRead(NOTE_KNOB), 0, 1023, 0, 15);
