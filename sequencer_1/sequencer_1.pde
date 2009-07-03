@@ -19,12 +19,12 @@
 #define POKE_BUTTON 0
 
 // the digital in pins connect to the three-position switch
-#define STEP_LEFT 7
-#define STEP_RIGHT 6
+#define STEP_LEFT 9
+#define STEP_RIGHT 8
 
 // the scale divider ranges
-#define SCALE_LOW 500
-#define SCALE_HIGH 10
+#define SCALE_LOW 256
+#define SCALE_HIGH 16
 
 // The tempo range, as length of note in ms
 #define TEMPO_SLOW 500
@@ -34,8 +34,17 @@
 #define PATTERN_LEN  64
 
 // debug some data out over serial if 1
-#define SERIAL_DEBUG 0
+#define SERIAL_DEBUG 1
 #define SERIAL_BAUD  115200
+
+
+#if SERIAL_DEBUG
+#define Debug_print(a...) Serial.print(a)
+#define Debug_println(a...) Serial.println(a)
+#else
+#define Debug_print(...)
+#define Debug_println(...)
+#endif
 
 
 // note values for two octave scale
@@ -70,28 +79,27 @@ static const float
 
 
 // the notes available via the NOTE_KNOB
-static const float majScale[] = {
+static const float note_set[] = {
   Rest, A,  B,  CS,  D,  E,  FS,  GS,
   A2,   B2,  C2S,  D2,  E2,  F2S,  G2S,  A3};
 
 
 // our pattern
-static int pattern[PATTERN_LEN];       // indexes into majScale
-static int pattern_scale[PATTERN_LEN]; // the scale int itself
+static unsigned int pattern[PATTERN_LEN];        // indexes into note_set
+static unsigned int pattern_scale[PATTERN_LEN];  // the scale int itself
 
 
 void setup() {
 
-  int foo[] = {0, 3, 0, 1, 0, 6, 0, 1};
-
-  // write our initial pattern
+  // write our initial pattern, which is just some beep boop looping.
+  const int foo[] = {0, 3, 0, 1, 0, 6, 0, 1};
   for(int index = PATTERN_LEN; index--; ) {
     pattern_scale[index] = 64;
     pattern[index] = foo[index % 8];
   }
   
-  // set some pin modes.
   pinMode(POKE_BUTTON, INPUT);
+  pinMode(SPEAKER, OUTPUT);
 
   #if INDICATOR
   pinMode(INDICATOR, OUTPUT);
@@ -109,10 +117,6 @@ void setup() {
 } 
 
 
-#define readStep() \
-  ((digitalRead(STEP_LEFT) == LOW)? -1: \
-   ((digitalRead(STEP_RIGHT) == LOW)? 1: 0))
-
 
 void loop(){ 
   unsigned int poke, tempo, scale;
@@ -129,7 +133,7 @@ void loop(){
     // get the tempo every cycle
     tempo = map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
 
-    if(! digitalRead(POKE_BUTTON)) {
+    if(digitalRead(POKE_BUTTON) == LOW) {
       // the poke button is pressed, so we'll read the note and scale knobs
       poke = map(analogRead(NOTE_KNOB), 0, 1023, 0, 15);
       scale = map(analogRead(SCALE_KNOB), 0, 1023, SCALE_LOW, SCALE_HIGH);
@@ -139,14 +143,12 @@ void loop(){
       pattern_scale[index] = scale;
       pattern[index] = poke;
       
-      #if SERIAL_DEBUG 
-      Serial.print("mod ");
-      Serial.print(index, DEC);
-      Serial.print(" to ");
-      Serial.print(scale, DEC);
-      Serial.print(":");
-      Serial.println(poke, DEC);
-      #endif
+      Debug_print("mod ");
+      Debug_print(index, DEC);
+      Debug_print(" to ");
+      Debug_print(scale, DEC);
+      Debug_print(":");
+      Debug_println(poke, DEC);
       
     } else {
       // load the note and scale from the existing pattern
@@ -154,18 +156,21 @@ void loop(){
       scale = pattern_scale[index];
     }
     
-    #if SERIAL_DEBUG
-    Serial.print("play ");
-    Serial.print(index, DEC);
-    Serial.print(" as ");
-    Serial.println(poke);
-    #endif
+    Debug_print("play ");
+    Debug_print(index, DEC);
+    Debug_print(" as ");
+    Debug_println(poke);
 
     // play the note in its scale for the duration of the tempo
-    freqout((int)(majScale[poke] / scale), tempo);
+    if(poke) {
+      freqout((int)(note_set[poke] / scale), tempo);
+    } else {
+      delay(tempo);
+    }
     
     // move the index forward or backwards depending on the step pins
-    index += readStep();
+    index += ((digitalRead(STEP_LEFT) == LOW)? -1:
+	      (digitalRead(STEP_RIGHT) == LOW)? 1: 0);
     index %= PATTERN_LEN;
   }
 }
@@ -173,38 +178,25 @@ void loop(){
 
 /* frequency and time in ms */
 static void freqout(int freq, int t) {
-  if(! freq) {
-    // just a Rest
-    delay(t);
-      
-  } else {   
-    long cycles, period;
-
-    // subtract 7 microseconds to make up for digitalWrite overhead 
-    period = (500000 / freq) - 7;
-    cycles = ((long)freq * ((long)t)) / 1000;
-
-    // turn the speaker pin on only when we're going to use it
-    pinMode(SPEAKER, OUTPUT);
-    freqcycle(SPEAKER, cycles, period);
-    pinMode(SPEAKER, INPUT);
+  long cycles, period;
+  
+  Debug_print("freqout(");
+  Debug_print(freq, DEC);
+  Debug_print(", ");
+  Debug_print(t, DEC);
+  Debug_println(")");
+  
+  // subtract 7 microseconds to make up for digitalWrite overhead 
+  period = (500000 / freq) - 7;
+  cycles = ((long)freq * ((long)t)) / 1000;
+  
+  while(cycles--) {
+    digitalWrite(SPEAKER, HIGH);
+    delayMicroseconds(period);
+    digitalWrite(SPEAKER, LOW);
+    delayMicroseconds(period);
   }
 }
 
 
-static void freqcycle(int pin, long cycles, int hperiod) {
-
-  #if SERIAL_DEBUG
-  Serial.print("freqcycle ");
-  Serial.print(cycles, DEC);
-  Serial.print(" ");
-  Serial.println(hperiod, DEC);
-  #endif
-
-  while(cycles--) {
-      digitalWrite(pin, HIGH);
-      delayMicroseconds(hperiod);
-      digitalWrite(pin, LOW);
-      delayMicroseconds(hperiod);
-   }
-}
+/* The end. */
