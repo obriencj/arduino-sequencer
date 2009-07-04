@@ -1,30 +1,30 @@
 /*
 
-This version of the sequencer has two separate sound channels: A and
+This version of the sequencer has two separate sine waves: A and
 B. Each have their own recording button and sequence.  They are both
 played at the same tempo.
 
-This version of the sequencer now performs the playback on those
-channels via an interrupt. The frequency output of channel A and
-channel B, and the tempo stepping through the sequence are all
-controlled via counters. The main program loop only performs
-observations on the digital input port and the three analog lines.
+This version of the sequencer performs the playback on those sines via
+an interrupt. The frequency output of channel A and channel B, and the
+tempo stepping through the sequence are all controlled via
+counters. The main program loop only performs observations on the
+digital input ports and the three analog lines.
 
-There's no serial debugging mode for this one because we've stolen the
-pins normally used for Serial to do the outputs for channel A and B.
+This sequencer does not directly output a square waveform. Instead, it
+produces an 8bit sequence serially which must be decoded by an IC and
+in turn passed to a DAC.
 
 WIRING:
-  D0 : speaker (channel A)
-  D1 : speaker (channel B)
-  D2, D3 : 2-4 demux to four LEDs
-  D4, D5 : 2-4 demux to four LEDs
-  D6, D7 : 2-4 demux to four LEDs
-  D8, D9 : left and right rockers on a three-position (On-Off-On)
-            switch (center pole to Ground). Tempo direction.
-  D10 : momentary button (record A), normally open (other end to
-        Ground)
-  D11 : momentary button (record B), normally open (other end to 
-        Ground)
+  D2, D3 : left and right rockers on a three-position (On-Off-On)
+           switch (center pole to Ground). For tempo direction.
+  D4 : momentary button, normally open (other end to Ground). For
+       recording to channel A.
+  D5 : momentary button, normally open (other end to Ground). For
+       recording to channel B.
+  D8 : Serial data for DAC
+  D9 : Serial data for LED
+  D10 : Clock to DAC and LED serial-to-parallel
+  D11 : Latch for DAC and LED serial-to-parallel
   A0 : center pole on potentiometer for tempo selection
   A1 : center pole on potentiometer for scale selection
   A2 : center pole on potentiometer for note selection
@@ -34,16 +34,16 @@ WIRING:
   is Ground.
 
 
-NOTE: if you're having a hard time uploading this project to your
-board, unplug whatever is in pins 0 and 1 or you'll get an error. I
-should probably consider putting those two outputs somewhere else, but
-it's just so darn convenient having the six LED pins and the two
-square wave channels all in the same register byte.
-
-
 author: Christopher O'Brien  <obriencj@gmail.com>
 
 */
+
+
+/* BIG NOTE:
+
+   This software hasn't been tested yet, because I haven't build the
+   R/2R DAC, and haven't wired anything together.
+ */
 
 
 #include <avr/interrupt.h>
@@ -62,16 +62,23 @@ author: Christopher O'Brien  <obriencj@gmail.com>
 #define SCALE_LOW  (1 << 8)
 #define SCALE_HIGH (1 << 4)
 
-/* make this something greater than the highest frequency you want to
-   output, times the number of samples in a single wave. For a square
-   wave, that's just two samples (the high part and the low part) */
-#define SAMPLE_RATE (4000 * 2)
+/* greater than our highest frequency tone, times the number of steps
+   in our sine_table */
+#define SAMPLE_RATE (4000 * 32)
 
 // The tempo range, as a counter triggered at SAMPLE_RATE
 #define TEMPO_SLOW (SAMPLE_RATE / 2)
 #define TEMPO_FAST (SAMPLE_RATE / 50)
 
 static const float timer_freq = F_CPU / SAMPLE_RATE;
+
+
+static const byte sine_table[] = {
+  0, 3, 10, 22, 38, 57, 79, 103,
+  127, 152, 176, 198, 217, 233, 245, 252,
+  254, 252, 245, 233, 217, 198, 176, 152, 
+  128, 103, 79, 57, 38, 22, 10, 3,
+};
 
 
 // note frequency values thanks to Paul Badger
@@ -132,39 +139,44 @@ static unsigned int tempo = 1000;
 static unsigned int tempo_counter = 1000;
 
 
-// the state of the square-wave output pins
-static boolean spkr1 = false, spkr2 = false;
+// the current index into the sine_table
+static unsigned int spkr1 = 0, spkr2 = 0;
 
 
 
 ISR(TIMER1_COMPA_vect) {
-  
+  boolean changed = false;
+
   /* The sound channels are serviced by first checking that they are
      not a Rest note (tickr_a == 0). Rest notes will have the speaker
-     line set low for the duration. Non-rest notes will have the
-     speaker line flip states every tick interrupts. For example,
-     counter_a will be set to ticker_a, which could be 56. After 56
-     triggers of this interrupt, the speaker will be flipped, and
-     counter_a will be reset to the value in ticker_a. */
+     line set low for the duration. Non-rest notes will have their
+     8bit value advanced along the sine table every tick interrupts.
+     For example, counter_a will be set to ticker_a, which could be
+     56. After 56 triggers of this interrupt, the value of that wave
+     at that time will be fetched from the next step in the
+     sine_table, and counter_a will be reset to the value in
+     ticker_a. */
 
   // service channel A
   if(ticker_a) {
     if(! counter_a--) {
-      spkr1 = !spkr1;
+      changed = true;
+      spkr1++;
       counter_a = ticker_a;
     }
   } else {
-    spkr1 = false;
+    spkr1 = 0;
   }
   
   // service channel B
   if(ticker_b) {
     if(! counter_b--) {
-      spkr2 = !spkr2;
+      changed = true;
+      spkr2++;
       counter_b = ticker_b;
     }
   } else {
-    spkr2 = false;
+    spkr2 = 0;
   }
 
   /* The tempo advances the sequences. Every time tempo_counter
@@ -176,6 +188,11 @@ ISR(TIMER1_COMPA_vect) {
   
   // service the tempo
   if(! tempo_counter--) {
+
+    /* we don't set changed to true here, because we won't consider
+       the next step in the tempo pattern ready to be displayed until
+       we've actually got the new tone playing. */
+    
     ticker_a = pattern[pattern_i][0];
     ticker_b = pattern[pattern_i][1];
     
@@ -185,19 +202,39 @@ ISR(TIMER1_COMPA_vect) {
     pattern_i %= 64;
   }
 
-  /* Every single interrupt cycle PORTD is updated to present the bits
-     for the index of the pattern (on the six most significant pins),
-     and the low two pins are set to represent the current state of
-     either channel's line. */
-  PORTD = (pattern_i << 2) | spkr2 << 1 | spkr1;
+  if(changed) {
+
+    /* serialize out the average of the two sine_table values and the
+       current pattern index. LSB first, because it's easier. */
+
+    byte avg = (sine_table[spkr1] + sine_table[spkr2]) / 2;
+    byte pti = pattern_i;
+
+    for(int i = 8; i--; ) {
+
+      // low latch, low clock, and set the LSB of pti and avg
+      PORTB = (PORTB & 0xf0) | ((pti & 1) << 1) | avg & 1;
+
+      // now we have a new LSB to write
+      avg >>= 1;
+      pti >>= 1;
+
+      // clock on rising edge
+      PORTB |= 0x4;
+    }
+
+    // latch on rising edge
+    PORTB |= 0x8;
+  }
 }
 
 
 
 /* turn the frequency of the tone (note / scale) into a number of
-   ticks for our interrupt to count before flipping. */
+   ticks for our interrupt to count before stepping through the sine
+   table. */
 #define note_to_ticks(notei, scale) \
-  (notei? ((SAMPLE_RATE / 2) / (note_set[notei] / scale)): 0)
+  (notei? ((SAMPLE_RATE / 32) / (note_set[notei] / scale)): 0)
 
 
 
@@ -223,12 +260,12 @@ void setup() {
   OCR1A = F_CPU / SAMPLE_RATE;
   TIMSK1 |= _BV(OCIE1A);
   
-  // set all of PORTD as output
-  DDRD = 0xff;
+  // set the bottom of PORTC as output
+  DDRB = 0x0f;
   
   // set all of PORTB as input with the bottom four as pull-up
-  DDRB = 0x00;
-  PORTB = 0x0f;
+  DDRD = 0x00;
+  PORTD = 0x0f;
 
   // re-enable interrupts
   sei();
@@ -247,8 +284,9 @@ void loop() {
   recording_b = !(data & 8);
   
   if(recording_a || recording_b) {
-    // we only bother doing the analog read if we're actually
-    // going to record something.
+    
+    /* we only bother doing the analog read if we're actually going to
+       record the value into our pattern. */
     
     int scale, notei, i = pattern_i;
     unsigned int ticks;
@@ -260,8 +298,8 @@ void loop() {
     // an index into the note_set array
     notei = map(analogRead(NOTE_KNOB), 0, 1023, 0, 15);
     
-    // converts the above into the number of ticks the interrupt
-    // fires per-phase of the tone.
+    /* converts the above into the number of ticks the interrupt fires
+       per sample of the tone. */
     ticks = note_to_ticks(notei, scale);
     
     if(recording_a) {
