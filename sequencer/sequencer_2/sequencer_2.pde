@@ -14,17 +14,17 @@ There's no serial debugging mode for this one because we've stolen the
 pins normally used for Serial to do the outputs for channel A and B.
 
 WIRING:
-  D0 : speaker (channel A)
-  D1 : speaker (channel B)
-  D2, D3 : 2-4 demux to four LEDs
-  D4, D5 : 2-4 demux to four LEDs
-  D6, D7 : 2-4 demux to four LEDs
-  D8, D9 : left and right rockers on a three-position (On-Off-On)
-            switch (center pole to Ground). Tempo direction.
-  D10 : momentary button (record A), normally open (other end to
-        Ground)
-  D11 : momentary button (record B), normally open (other end to 
-        Ground)
+  D2 : speaker (channel A)
+  D3 : speaker (channel B)
+  D4 : momentary button (record A), normally open (other end to
+       Ground)
+  D5 : momentary button (record B), normally open (other end to 
+       Ground)
+  D6, D7 : left and right rockers on a three-position (On-Off-On)
+           switch (center pole to Ground). Tempo direction.
+  D8, D9 : 2-4 demux to four LEDs
+  D10, D11 : 2-4 demux to four LEDs
+  D12, D13 : 2-4 demux to four LEDs
   A0 : center pole on potentiometer for tempo selection
   A1 : center pole on potentiometer for scale selection
   A2 : center pole on potentiometer for note selection
@@ -32,13 +32,6 @@ WIRING:
   Looking down at the potentiometers, with the contacts to the North:
   Left contact is +5V, center contact is the analog pin, Right contact
   is Ground.
-
-
-NOTE: if you're having a hard time uploading this project to your
-board, unplug whatever is in pins 0 and 1 or you'll get an error. I
-should probably consider putting those two outputs somewhere else, but
-it's just so darn convenient having the six LED pins and the two
-square wave channels all in the same register byte.
 
 
 author: Christopher O'Brien  <obriencj@gmail.com>
@@ -59,13 +52,13 @@ author: Christopher O'Brien  <obriencj@gmail.com>
 #define TEMPO_KNOB 0
 
 // the scale divider ranges
-#define SCALE_LOW  (1 << 8)
-#define SCALE_HIGH (1 << 4)
+#define SCALE_LOW  256
+#define SCALE_HIGH 28
 
 /* make this something greater than the highest frequency you want to
    output, times the number of samples in a single wave. For a square
    wave, that's just two samples (the high part and the low part) */
-#define SAMPLE_RATE (4000 * 2)
+#define SAMPLE_RATE (10000)
 
 // The tempo range, as a counter triggered at SAMPLE_RATE
 #define TEMPO_SLOW (SAMPLE_RATE / 2)
@@ -183,13 +176,15 @@ ISR(TIMER1_COMPA_vect) {
 
     pattern_i += tempo_step;
     pattern_i %= 64;
+    
+    PORTB = pattern_i;
   }
 
   /* Every single interrupt cycle PORTD is updated to present the bits
      for the index of the pattern (on the six most significant pins),
      and the low two pins are set to represent the current state of
      either channel's line. */
-  PORTD = (pattern_i << 2) | spkr2 << 1 | spkr1;
+  PORTD = (PORTD & 0xf0) | spkr2 << 3 | spkr1 << 2;
 }
 
 
@@ -223,12 +218,13 @@ void setup() {
   OCR1A = F_CPU / SAMPLE_RATE;
   TIMSK1 |= _BV(OCIE1A);
   
-  // set all of PORTD as output
-  DDRD = 0xff;
+  // set pins 2 and 3 of PORTD as output
+  // pins 4 through 7 as input with pull-up resistors
+  DDRD |= 0x0c;
+  PORTD = 0xf0;
   
-  // set all of PORTB as input with the bottom four as pull-up
-  DDRB = 0x00;
-  PORTB = 0x0f;
+  // set the bottom six pins of PORTB as output
+  DDRB |= 0x3f;
 
   // re-enable interrupts
   sei();
@@ -238,13 +234,13 @@ void setup() {
 
 void loop() {
   int recording_a, recording_b;
-  byte data = PINB;
+  byte data = PIND;
   
   tempo = map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
-  tempo_step = !(data & 1)? -1: !(data & 2)? 1: 0;
+  tempo_step = !(data & 1 << 7)? -1: !(data & 1 << 6)? 1: 0;
   
-  recording_a = !(data & 4);
-  recording_b = !(data & 8);
+  recording_a = !(data & 1 << 4);
+  recording_b = !(data & 1 << 5);
   
   if(recording_a || recording_b) {
     // we only bother doing the analog read if we're actually
