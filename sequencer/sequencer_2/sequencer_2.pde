@@ -42,6 +42,9 @@ author: Christopher O'Brien  <obriencj@gmail.com>
 #include <avr/interrupt.h>
 
 
+#define BUMP_KNOB 3
+
+
 // the analog pin that the note knob is on
 #define NOTE_KNOB 2
 
@@ -53,16 +56,22 @@ author: Christopher O'Brien  <obriencj@gmail.com>
 
 // the scale divider ranges
 #define SCALE_LOW  256
-#define SCALE_HIGH 28
+#define SCALE_HIGH 26
 
 /* make this something greater than the highest frequency you want to
    output, times the number of samples in a single wave. For a square
    wave, that's just two samples (the high part and the low part) */
 #define SAMPLE_RATE (10000)
 
-// The tempo range, as a counter triggered at SAMPLE_RATE
-#define TEMPO_SLOW (SAMPLE_RATE / 2)
-#define TEMPO_FAST (SAMPLE_RATE / 50)
+
+// bumping as parts of a tempo
+#define BUMPS_SLOW 2
+#define BUMPS_FAST 80
+
+
+// The tempo range, as frequencies
+#define TEMPO_SLOW 1
+#define TEMPO_FAST 10
 
 static const float timer_freq = F_CPU / SAMPLE_RATE;
 
@@ -121,13 +130,16 @@ static unsigned int counter_a = 0, counter_b = 0;
 
 // same as with the ticker above, the tempo_counter decrements until
 // zero, then resets to the tempo
-static unsigned int tempo = 1000;
-static unsigned int tempo_counter = 1000;
+static unsigned int tempo = TEMPO_FAST;
+static unsigned int tempo_counter = TEMPO_FAST;
 
 
 // the state of the square-wave output pins
 static boolean spkr1 = false, spkr2 = false;
 
+
+static unsigned int bumps = 0, bump_counter = 0;
+static boolean bumped;
 
 
 ISR(TIMER1_COMPA_vect) {
@@ -160,7 +172,26 @@ ISR(TIMER1_COMPA_vect) {
     spkr2 = false;
   }
 
-  /* The tempo advances the sequences. Every time tempo_counter
+
+  /* Every single interrupt cycle PORTD is updated to present the bits
+     for the index of the pattern (on the six most significant pins),
+     and the low two pins are set to represent the current state of
+     either channel's line. */
+
+  /* ... unless it's currently being bumped.*/  
+  if(bumped) {
+    PORTD = (PORTD & 0xf0);
+    
+  } else {
+    PORTD = (PORTD & 0xf0) | spkr2 << 3 | spkr1 << 2;
+  }
+}
+
+
+
+ISR(TIMER2_COMPA_vect) {
+  
+    /* The tempo advances the sequences. Every time tempo_counter
      reaches zero, it is reset to the tempo again, and the pattern
      index is advanced in the direction of the tempo_step. At this
      time, the ticker_a and ticker_b values are set to the contents of
@@ -176,15 +207,16 @@ ISR(TIMER1_COMPA_vect) {
 
     pattern_i += tempo_step;
     pattern_i %= 64;
-    
-    PORTB = pattern_i;
   }
-
-  /* Every single interrupt cycle PORTD is updated to present the bits
-     for the index of the pattern (on the six most significant pins),
-     and the low two pins are set to represent the current state of
-     either channel's line. */
-  PORTD = (PORTD & 0xf0) | spkr2 << 3 | spkr1 << 2;
+  
+  if(bumps) {
+    if(! bump_counter--) {
+      bumped = !bumped;
+      bump_counter = bumped? bumps: bumps << 1;
+    }
+  } else {
+    bumped = false;
+  }
 }
 
 
@@ -217,6 +249,9 @@ void setup() {
   TCCR1B = (TCCR1B & ~(_BV(CS12) | _BV(CS11))) | _BV(CS10);
   OCR1A = F_CPU / SAMPLE_RATE;
   TIMSK1 |= _BV(OCIE1A);
+
+  TCCR2A = TCCR2A & ~(_BV(WGM21) | _BV(WGM20));
+  TIMSK2 |= _BV(OCIE2A);
   
   // set pins 2 and 3 of PORTD as output
   // pins 4 through 7 as input with pull-up resistors
@@ -236,8 +271,11 @@ void loop() {
   int recording_a, recording_b;
   byte data = PIND;
   
-  tempo = map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
+  tempo = 500 / map(analogRead(TEMPO_KNOB), 0, 1023, TEMPO_SLOW, TEMPO_FAST);
   tempo_step = !(data & 1 << 7)? -1: !(data & 1 << 6)? 1: 0;
+  
+  int b = analogRead(BUMP_KNOB);
+  bumps = b? tempo / map(b, 0, 1023, BUMPS_SLOW, BUMPS_FAST): 0;
   
   recording_a = !(data & 1 << 4);
   recording_b = !(data & 1 << 5);
