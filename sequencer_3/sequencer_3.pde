@@ -4,15 +4,19 @@ This version of the sequencer has two separate sine waves: A and
 B. Each have their own recording button and sequence.  They are both
 played at the same tempo.
 
-This version of the sequencer performs the playback on those sines via
-an interrupt. The frequency output of channel A and channel B, and the
-tempo stepping through the sequence are all controlled via
-counters. The main program loop only performs observations on the
-digital input ports and the three analog lines.
+(edit, not yet, but soon it will have two waves)
 
-This sequencer does not directly output a square waveform. Instead, it
-produces an 8bit sequence serially which must be decoded by an IC and
-in turn passed to a DAC.
+The sequencer performs the playback on those sines via an interrupt.
+The frequency output of channel A, and the tempo stepping through the
+sequence are all controlled via counters. The main program loop only
+performs observations on the digital input ports and the three analog
+lines.
+
+This sequencer does not directly output a waveform. Instead, it
+produces an 8bit sequence serially which must be decoded by a 595 chip
+and in turn passed to a DAC. The output of the DAC is not audible when
+wired directly to a speaker, as it had been with the previous
+sequencers. It works will as a line-input source.
 
 WIRING:
   D4, D5 : left and right rockers on a three-position (On-Off-On)
@@ -37,7 +41,6 @@ WIRING:
 author: Christopher O'Brien  <obriencj@gmail.com>
 
 */
-
 
 
 #include <avr/interrupt.h>
@@ -160,8 +163,8 @@ static const float note_set[] = {
   A2,   B2,  C2S,  D2,  E2,  F2S,  G2S,  A3};
 
 
-// this is where we store the actual pattern. Each entry in the pattern is
-// a counter that the interrupt will use to cycle itself.
+/* this is where we store the actual pattern. Each entry in the
+   pattern is loaded into div_a and mult_a as the tempo triggers. */
 static unsigned int pattern_i = 0;
 static unsigned int pattern[64][2];
 
@@ -170,9 +173,12 @@ static unsigned int pattern[64][2];
 static int tempo_step = 1;
 
 
+/* the divisor and multiplier for the A channel wave */
 static unsigned int div_a = 0;
 static unsigned int mult_a = 0;
 
+/* the current counter and sine_table position of the A channel
+   wave */
 static unsigned int counter_a = 0;
 static unsigned int position_a = 192;
 
@@ -184,18 +190,20 @@ static unsigned int tempo_counter = TEMPO_FAST;
 
 
 
+/* The playback interrupt */
 ISR(TIMER1_COMPA_vect) {
-  boolean changed = false;
 
-  /* The sound channels are serviced by first checking that they are
-     not a Rest note (tickr_a == 0). Rest notes will have the speaker
-     line set low for the duration. Non-rest notes will have their
-     8bit value advanced along the sine table every tick interrupts.
-     For example, counter_a will be set to ticker_a, which could be
-     56. After 56 triggers of this interrupt, the value of that wave
-     at that time will be fetched from the next step in the
-     sine_table, and counter_a will be reset to the value in
-     ticker_a. */
+  /* The sound channel is serviced by first checking that it is not a
+     Rest note (div_a == 0). Non-rest notes will advance mult_a steps
+     through the sine_table every div_a interrupts, at which point the
+     8bit value at that position in the sine_table is serialized out,
+     causing the DAC to change its output voltage to match. */
+
+  /* The serializing portion of this interrupt is also used to output
+     the value of the sequence index, which could be used for an LED
+     display, or some such. I keep meaning to wire that up... */
+
+  boolean changed = false;
 
   if(div_a) {
     if(! counter_a--) {
@@ -206,21 +214,32 @@ ISR(TIMER1_COMPA_vect) {
     }
   }
 
+  /* TODO: add a second set of div, counter, position, and mult, and
+     average the two voltages. This will allow us to "mix" two
+     different tones together, by averaging their wave forms. */
+
   if(changed) {
-    /* serialize out the average of the two sine_table values and the
-       current pattern index. */
+    /* Serialize out the average of the two sine_table values and the
+       current pattern index.  I'm mildly proud of this little
+       routine. It's roughly a metric butt-load faster than using
+       shiftout */
 
     byte avg = sine_table[position_a];
     byte pti = pattern_i;
 
+    /* TODO: this can be made more efficient by sending LSB first, but
+       I wired up my stuff with the MSB being the first.  Once I
+       re-wire I'll go back to sending LSB first again. I could also
+       decide to unroll this loop. */
     for(int i = 8; i--; ) {
 
-      // low latch, low clock, and set the MSB of pti and avg
+      // low latch, low clock, and set the bits from pti and avg
       PORTB = (PORTB & 0xf0) | ((!!(pti & 0x80)) << 1) | (!!(avg & 0x80));
+      //PORTB = (PORB & 0xf0) | ((pti & 1) << 1) | (avg & 1);
 
-      // now we have a new MSB to write
-      avg <<= 1;
-      pti <<= 1;
+      // now we have a new bit to write
+      avg <<= 1; pti <<= 1;
+      //avg >>= 1; pti >>= 1;
 
       // clock on rising edge
       PORTB |= 0x4;
@@ -233,37 +252,33 @@ ISR(TIMER1_COMPA_vect) {
 
 
 
+/* The tempo interrupt */
 ISR(TIMER2_COMPA_vect) {
  
   /* The tempo advances the sequences. Every time tempo_counter
      reaches zero, it is reset to the tempo again, and the pattern
      index is advanced in the direction of the tempo_step. At this
-     time, the ticker_a and ticker_b values are set to the contents of
-     the pattern at that index, causing both channels to begin
-     alternating their line after that many interrupts. */
+     time, the div_a and div_b values are set to the contents of the
+     pattern at that index. The playback interrupt will begin using
+     the new values once it has finished its current cycle. */
   
-
   if(! tempo_counter--) {
     
     div_a = pattern[pattern_i][0];
     mult_a = pattern[pattern_i][1];
     
     tempo_counter = tempo;
-
+    
     pattern_i += tempo_step;
     pattern_i %= 64;
-    
-    Debug_print("div_a =");
-    Debug_print(div_a, DEC);
-    Debug_print(", mult_a = ");
-    Debug_println(mult_a, DEC);
   } 
 }
 
 
 
 static void note_conversion(unsigned int note_index, unsigned int scale,
-                            unsigned int *stepper, unsigned int *divider) {
+			    unsigned int *stepper, unsigned int *divider) {
+  
   float freq = note_set[note_index] / scale;
   float step = (SAMPLE_RATE / 256) / freq;
   *stepper = ((unsigned int) step) || 1;
@@ -284,7 +299,9 @@ void setup() {
   cli();
 
   for(int index = 64; index--; ) {
-    note_conversion(foo_a[index % 8], 32, &pattern[index][0], &pattern[index][1]);
+    note_conversion(foo_a[index % 8], 32,
+		    &pattern[index][0],
+		    &pattern[index][1]);
   }
   
   Debug_println("finished note conversion");
@@ -293,13 +310,13 @@ void setup() {
   mult_a = pattern[0][1];
   counter_a = div_a;
   
-    Debug_print("converted to: div_a = ");
-    Debug_print(div_a, DEC);
-    Debug_print(", mult_a = ");
-    Debug_println(mult_a, DEC);
-    
+  Debug_print("converted to: div_a = ");
+  Debug_print(div_a, DEC);
+  Debug_print(", mult_a = ");
+  Debug_println(mult_a, DEC);
+  
   Debug_println("setting up Timer1");
-
+  
   // this madness sets up our Timer 1 interrupt frequency.
   // thanks to Michael Smith
   // http://www.arduino.cc/playground/Code/PCMAudio
@@ -313,18 +330,18 @@ void setup() {
   
   TCCR2A = TCCR2A & ~(_BV(WGM21) | _BV(WGM20));
   TIMSK2 |= _BV(OCIE2A);
-
+  
   Debug_println("timers ready");
-
+  
   // set the bottom of PORTB as output
   DDRB = 0x0f;
   
   // set all of PORTD as input with the bottom four as pull-up
   DDRD = 0x00;
   PORTD = 0xf0;
-
+  
   Debug_println("re-enabling interrupts");
-
+  
   // re-enable interrupts
   sei();
   
@@ -343,13 +360,12 @@ void loop() {
   tempo_step = !(data & 16)? -1: !(data & 32)? 1: 0;
   
   recording_a = !(data & 64);
-  //recording_b = !(data & 128);
+  recording_b = !(data & 128);
   
   if(recording_a) {
-    
     /* we only bother doing the analog read if we're actually going to
        record the value into our pattern. */
-        
+    
     int scale, notei, i = pattern_i;
     
     // the scale divider
@@ -358,12 +374,12 @@ void loop() {
     
     // an index into the note_set array
     notei = map(analogRead(NOTE_KNOB), 0, 1023, 0, 15);
-
+    
     Debug_print("recording: notei = ");
     Debug_print(notei, DEC);
     Debug_print(", scale = ");
     Debug_println(scale, DEC);
-
+    
     note_conversion(notei, scale, &pattern[i][0], &pattern[i][1]);
     div_a = pattern[i][0];
     mult_a = pattern[i][1];
