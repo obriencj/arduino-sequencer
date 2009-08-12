@@ -127,6 +127,8 @@ static const byte sine_table[] = {
   102, 105, 108, 111, 114, 117, 120, 123 };
 
 
+
+
 // note frequency values thanks to Paul Badger
 // http://www.arduino.cc/playground/Main/Freqout
 static const float Rest  = 0,
@@ -189,6 +191,8 @@ static unsigned int tempo = TEMPO_FAST;
 static unsigned int tempo_counter = TEMPO_FAST;
 
 
+#define BIT(num, bit)  (((num) >> bit) & 1)
+
 
 /* The playback interrupt */
 ISR(TIMER1_COMPA_vect) {
@@ -205,13 +209,11 @@ ISR(TIMER1_COMPA_vect) {
 
   boolean changed = false;
 
-  if(div_a) {
-    if(! counter_a--) {
-      position_a += mult_a;
-      position_a %= 256;
-      counter_a = div_a;
-      changed = true;
-    }
+  if(div_a && ! counter_a--) {
+    position_a += mult_a;
+    position_a %= 256;
+    counter_a = div_a;
+    changed = true;
   }
 
   /* TODO: add a second set of div, counter, position, and mult, and
@@ -227,19 +229,9 @@ ISR(TIMER1_COMPA_vect) {
     byte avg = sine_table[position_a];
     byte pti = pattern_i;
 
-    /* TODO: this can be made more efficient by sending LSB first, but
-       I wired up my stuff with the MSB being the first.  Once I
-       re-wire I'll go back to sending LSB first again. I could also
-       decide to unroll this loop. */
     for(int i = 8; i--; ) {
-
-      // low latch, low clock, and set the bits from pti and avg
-      PORTB = (PORTB & 0xf0) | ((!!(pti & 0x80)) << 1) | (!!(avg & 0x80));
-      //PORTB = (PORB & 0xf0) | ((pti & 1) << 1) | (avg & 1);
-
-      // now we have a new bit to write
-      avg <<= 1; pti <<= 1;
-      //avg >>= 1; pti >>= 1;
+      // clock and latch low, bis of pti and avg
+      PORTB = (PORTB & 0xf0) | (BIT(pti, i) << 1) | BIT(avg, i);
 
       // clock on rising edge
       PORTB |= 0x4;
@@ -264,8 +256,8 @@ ISR(TIMER2_COMPA_vect) {
   
   if(! tempo_counter--) {
     
-    div_a = pattern[pattern_i][0];
-    mult_a = pattern[pattern_i][1];
+    mult_a = pattern[pattern_i][0];
+    div_a = pattern[pattern_i][1];
     
     tempo_counter = tempo;
     
@@ -277,12 +269,17 @@ ISR(TIMER2_COMPA_vect) {
 
 
 static void note_conversion(unsigned int note_index, unsigned int scale,
-			    unsigned int *stepper, unsigned int *divider) {
+			    unsigned int *multiplier, unsigned int *divider) {
   
+  unsigned int m, d;
   float freq = note_set[note_index] / scale;
-  float step = (SAMPLE_RATE / 256) / freq;
-  *stepper = ((unsigned int) step) || 1;
-  *divider = (unsigned int) (1.0 / step);
+  float s = (SAMPLE_RATE / 256) / freq;
+  
+  m = (1.0 / s);
+  d = s;
+  
+  *multiplier = m || 1;
+  *divider = d;
 }
 
 
@@ -306,8 +303,8 @@ void setup() {
   
   Debug_println("finished note conversion");
   
-  div_a = pattern[0][0];
-  mult_a = pattern[0][1];
+  mult_a = pattern[0][0];
+  div_a = pattern[0][1];
   counter_a = div_a;
   
   Debug_print("converted to: div_a = ");
@@ -381,8 +378,8 @@ void loop() {
     Debug_println(scale, DEC);
     
     note_conversion(notei, scale, &pattern[i][0], &pattern[i][1]);
-    div_a = pattern[i][0];
-    mult_a = pattern[i][1];
+    mult_a = pattern[i][0];
+    div_a = pattern[i][1];
     
     Debug_print("converted to: div_a = ");
     Debug_print(div_a, DEC);
