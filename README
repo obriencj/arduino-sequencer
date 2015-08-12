@@ -1,4 +1,1 @@
-This is my first shot at sequencer software for the Arduino.
-
-You end up with three controlling knobs, a speaker (with optional
-volume knob), a button, and an LED.
+These are a collection of software audio/tone/function sequencers for an arduino (or similar atmega). I imported these from code.google.com in anticipation of the great shutdown. I will probably never work on them again, but it's good to keep a copy.
